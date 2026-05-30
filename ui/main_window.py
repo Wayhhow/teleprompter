@@ -117,6 +117,7 @@ class MainWindow(QMainWindow):
         self.control.speedChanged.connect(self.player.set_speed)
         self.control.fontSizeChanged.connect(self.view.set_font_size)
         self.control.voiceToggled.connect(self._on_voice_toggled)
+        self.control.alwaysOnTopToggled.connect(self._on_always_on_top_toggled)
 
         # 自动播放器信号
         self.player.sentenceChanged.connect(self._on_player_sentence_changed)
@@ -282,6 +283,17 @@ class MainWindow(QMainWindow):
         """语音识别错误回调"""
         QMessageBox.critical(self, "语音识别错误", error_msg)
         self.control.set_voice_active(False)
+
+    def _on_always_on_top_toggled(self, is_on: bool):
+        """窗口置顶切换回调"""
+        if is_on:
+            self.setWindowFlags(self.windowFlags() | Qt.WindowStaysOnTopHint)
+            self.statusBar().showMessage("窗口已置顶")
+        else:
+            self.setWindowFlags(self.windowFlags() & ~Qt.WindowStaysOnTopHint)
+            self.statusBar().showMessage("已取消置顶")
+        # 重新显示窗口（修改窗口标志后需要）
+        self.show()
 
     def _update_status_sentence(self, index: int):
         """更新状态栏句子信息"""

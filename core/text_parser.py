@@ -50,6 +50,8 @@ def split_sentences(text: str) -> list:
     - 英文：. ! ?
     - 换行符：\\n
 
+    注意：音标部分（/.../）内的点号不会被当作句号。
+
     Args:
         text: 原始文本
 
@@ -59,13 +61,33 @@ def split_sentences(text: str) -> list:
     if not text or not text.strip():
         return []
 
-    # 匹配模式：非分隔符字符 + 可选的末尾分隔符
+    # 第一步：将所有音标（/.../）整体替换为不含任何标点的占位符
+    # 这样分句时音标不会被截断
+    phonetic_map = []  # [(placeholder, original), ...]
+
+    def _save_phonetic(match):
+        idx = len(phonetic_map)
+        # 使用纯字母占位符，不含任何标点
+        placeholder = f'PHONMARK{idx}X'
+        phonetic_map.append((placeholder, match.group()))
+        return placeholder
+
+    protected_text = re.sub(r'/[^/]+/', _save_phonetic, text)
+
+    # 第二步：在保护后的文本上进行正常分句
     pattern = r'[^。！？.!?\n]+[。！？.!?\n]?'
     sentences = []
 
-    for match in re.finditer(pattern, text):
+    for match in re.finditer(pattern, protected_text):
         sentence = match.group().strip()
-        if sentence:  # 过滤空句子
+        if not sentence:
+            continue
+
+        # 第三步：恢复音标占位符
+        for placeholder, original in phonetic_map:
+            sentence = sentence.replace(placeholder, original)
+
+        if sentence:
             sentences.append((match.start(), match.end(), sentence))
 
     return sentences
@@ -116,11 +138,11 @@ def normalize_text_for_matching(text: str) -> str:
 def calculate_similarity(text1: str, text2: str) -> float:
     """
     计算两段文本的相似度（0.0 ~ 1.0）。
-    使用字符重叠率算法。
+    针对实时语音识别优化：支持部分匹配（text1 是 text2 的子串或前缀）。
 
     Args:
-        text1: 文本1（通常为识别文本）
-        text2: 文本2（通常为稿子句子）
+        text1: 文本1（通常为识别文本，可能是不完整的）
+        text2: 文本2（通常为完整的稿子句子）
 
     Returns:
         相似度分数
@@ -131,10 +153,26 @@ def calculate_similarity(text1: str, text2: str) -> float:
     if not t1 or not t2:
         return 0.0
 
-    # 使用最长公共子序列比例作为相似度
     len1, len2 = len(t1), len(t2)
 
-    # 简单的字符重叠率：公共字符数 / 较短文本长度
+    # 策略1：如果识别文本是句子文本的子串，给予高相似度
+    if t1 in t2:
+        # 子串匹配：根据覆盖比例打分
+        return 0.6 + 0.4 * (len1 / len2)
+
+    # 策略2：计算最长公共子串长度
+    max_common_len = 0
+    for i in range(len1):
+        for j in range(i + 1, len1 + 1):
+            substr = t1[i:j]
+            if substr in t2:
+                max_common_len = max(max_common_len, len(substr))
+
+    if max_common_len > 0:
+        # 基于最长公共子串的相似度
+        return 0.3 + 0.5 * (max_common_len / len1)
+
+    # 策略3：字符重叠率（兜底）
     set1 = set(t1)
     set2 = set(t2)
     common = set1 & set2
@@ -142,6 +180,5 @@ def calculate_similarity(text1: str, text2: str) -> float:
     if not common:
         return 0.0
 
-    # 计算公共字符在两个文本中出现的总次数
     common_count = sum(min(t1.count(c), t2.count(c)) for c in common)
-    return common_count / max(len1, len2)
+    return common_count / max(len1, len2) * 0.3  # 降低权重

@@ -25,11 +25,13 @@ class ControlPanel(QWidget):
     speedChanged = pyqtSignal(float)       # 速度改变
     fontSizeChanged = pyqtSignal(int)      # 字号改变
     voiceToggled = pyqtSignal(bool)        # 语音识别开关 (True=开始)
+    alwaysOnTopToggled = pyqtSignal(bool)  # 窗口置顶开关 (True=置顶)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._is_playing = False
         self._is_voice_active = False
+        self._is_always_on_top = False
         self._setup_ui()
 
     def _setup_ui(self):
@@ -67,6 +69,16 @@ class ControlPanel(QWidget):
         self.btn_reset = QPushButton("⟲ 重置")
         self.btn_reset.clicked.connect(self.resetRequested.emit)
         row1.addWidget(self.btn_reset)
+
+        # 分隔线
+        separator2 = QFrame()
+        separator2.setFrameShape(QFrame.VLine)
+        separator2.setStyleSheet("color: #555;")
+        row1.addWidget(separator2)
+
+        self.btn_top = QPushButton("📌 置顶")
+        self.btn_top.clicked.connect(self._toggle_always_on_top)
+        row1.addWidget(self.btn_top)
 
         row1.addStretch()
         layout.addLayout(row1)
@@ -212,3 +224,24 @@ class ControlPanel(QWidget):
     def get_speed(self) -> float:
         """获取当前速度倍率"""
         return self.speed_slider.value() / 10.0
+
+    def _toggle_always_on_top(self):
+        """切换窗口置顶状态"""
+        self._is_always_on_top = not self._is_always_on_top
+        if self._is_always_on_top:
+            self.btn_top.setText("📌 取消置顶")
+            self.btn_top.setStyleSheet("background-color: #0078d4; color: white;")
+        else:
+            self.btn_top.setText("📌 置顶")
+            self.btn_top.setStyleSheet("")
+        self.alwaysOnTopToggled.emit(self._is_always_on_top)
+
+    def set_always_on_top(self, is_on: bool):
+        """外部设置置顶状态"""
+        self._is_always_on_top = is_on
+        if is_on:
+            self.btn_top.setText("📌 取消置顶")
+            self.btn_top.setStyleSheet("background-color: #0078d4; color: white;")
+        else:
+            self.btn_top.setText("📌 置顶")
+            self.btn_top.setStyleSheet("")

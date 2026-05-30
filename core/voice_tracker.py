@@ -3,15 +3,15 @@
 
 import os
 import sys
-import json
 import threading
-import queue
+import time
 from pathlib import Path
 
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 
 from config import (
-    SAMPLE_RATE, BLOCK_SIZE, MATCH_THRESHOLD, SEARCH_FORWARD, MODEL_DIR
+    SAMPLE_RATE, BLOCK_SIZE, MATCH_THRESHOLD, SEARCH_RANGE, MODEL_DIR,
+    MATCH_DEBOUNCE_MS, MATCH_MIN_TEXT_LENGTH
 )
 from core.text_parser import calculate_similarity
 
@@ -43,11 +43,26 @@ class VoiceTracker(QObject):
         self._accumulated_text = ""  # 端点检测后的累积文本
         self._last_result = ""
 
-        # 音频数据队列
-        self._audio_queue = queue.Queue()
+        # 模型路径 - 支持打包后的路径
+        self._model_dir = self._get_model_dir()
 
-        # 模型路径
-        self._model_dir = MODEL_DIR
+        # 实时匹配防抖
+        self._last_match_time = 0  # 上次匹配时间戳
+        
+        # 智能匹配状态
+        self._confirmed_index = -1  # 已确认读到的句子索引
+        self._skip_detection_count = 0  # 连续检测到跳过的计数
+        self._last_recognized_text = ""  # 上次识别的文本
+
+    def _get_model_dir(self) -> str:
+        """获取模型目录路径，支持源码运行和打包后的程序"""
+        if getattr(sys, 'frozen', False):
+            # PyInstaller 打包环境：模型在 _internal/models 目录
+            model_path = Path(sys.executable).parent / "_internal" / "models"
+            if model_path.exists():
+                return str(model_path)
+        # 源码运行，使用配置中的路径
+        return MODEL_DIR
 
     def set_model_dir(self, model_dir: str):
         """设置模型目录"""
@@ -133,8 +148,11 @@ class VoiceTracker(QObject):
         """
         self._sentences = sentences
         self._current_index = current_index
+        self._confirmed_index = -1  # 重置已确认索引
+        self._skip_detection_count = 0
         self._accumulated_text = ""
         self._last_result = ""
+        self._last_recognized_text = ""
 
     def set_current_index(self, index: int):
         """设置当前句子索引"""
@@ -153,6 +171,10 @@ class VoiceTracker(QObject):
         self._stop_event.clear()
         self._accumulated_text = ""
         self._last_result = ""
+        self._last_match_time = 0
+        self._confirmed_index = -1
+        self._skip_detection_count = 0
+        self._last_recognized_text = ""
 
         # 重置流
         if self._stream:
@@ -174,6 +196,7 @@ class VoiceTracker(QObject):
 
         self._accumulated_text = ""
         self._last_result = ""
+        self._last_recognized_text = ""
         self.recognizedTextUpdated.emit("")
 
     def is_running(self) -> bool:
@@ -234,10 +257,12 @@ class VoiceTracker(QObject):
             # 发送实时识别文本到 UI
             self.recognizedTextUpdated.emit(result)
 
+            # 智能匹配：主要向下滚动，智能回翻
+            self._try_match_intelligent(result)
+
         if is_endpoint:
             if result:
-                # 一句话完成，进行文本匹配
-                self._on_sentence_end(result)
+                # 一句话完成，更新累积文本
                 self._accumulated_text += result
                 self.recognizedTextUpdated.emit(self._accumulated_text)
 
@@ -245,29 +270,93 @@ class VoiceTracker(QObject):
             self._recognizer.reset(self._stream)
             self._last_result = ""
 
-    def _on_sentence_end(self, recognized_text: str):
-        """一句话识别完成，进行文本匹配"""
+    def _try_match_intelligent(self, recognized_text: str):
+        """
+        智能匹配逻辑：
+        1. 主要向下滚动：优先匹配当前句之后的句子
+        2. 智能回翻：只有确定跳过了句子才往回翻
+        3. 预测下一句：根据当前句推断下一句内容
+        """
         if not recognized_text or not self._sentences:
             return
 
         recognized = recognized_text.strip()
-        if not recognized:
+        if len(recognized) < MATCH_MIN_TEXT_LENGTH:
             return
 
-        # 搜索范围：当前句到当前句+SEARCH_FORWARD
+        # 防抖检查
+        current_time = time.time() * 1000
+        if current_time - self._last_match_time < MATCH_DEBOUNCE_MS:
+            return
+
+        # 搜索范围：当前句及后面3句（优先向下）
+        # 如果检测可能跳过了，也搜索前面2句
+        search_start = max(0, self._current_index - 2)  # 向前2句（用于回翻）
+        search_end = min(len(self._sentences), self._current_index + 4)  # 向后3句
+
         best_match = self._current_index
         best_score = 0.0
+        current_score = 0.0
 
-        search_end = min(self._current_index + SEARCH_FORWARD + 1, len(self._sentences))
-
-        for i in range(self._current_index, search_end):
+        # 计算所有候选句的相似度
+        scores = {}
+        for i in range(search_start, search_end):
             sentence_text = self._sentences[i][2]
             score = calculate_similarity(recognized, sentence_text)
+            scores[i] = score
+            if i == self._current_index:
+                current_score = score
             if score > best_score:
                 best_score = score
                 best_match = i
 
-        # 相似度超过阈值且不是当前句子才跳转
-        if best_score >= MATCH_THRESHOLD and best_match > self._current_index:
-            self._current_index = best_match
-            self.sentenceMatched.emit(best_match)
+        # 决策逻辑
+        if best_score < MATCH_THRESHOLD:
+            # 相似度太低，不跳转
+            return
+
+        if best_match == self._current_index:
+            # 匹配到当前句，确认已读
+            self._confirmed_index = self._current_index
+            self._skip_detection_count = 0
+            return
+
+        # 匹配到其他句子
+        if best_match > self._current_index:
+            # 向下匹配（正常流程）
+            # 检查是否是下一句或跳过了几句
+            skip_count = best_match - self._current_index
+            
+            if skip_count == 1:
+                # 匹配到下一句，正常向下滚动
+                self._current_index = best_match
+                self._confirmed_index = best_match
+                self._last_match_time = current_time
+                self.sentenceMatched.emit(best_match)
+            elif skip_count <= 3:
+                # 可能跳过了1-3句，需要确认
+                # 要求跳过的句子相似度明显低于当前匹配
+                skipped_similar = all(
+                    scores.get(i, 0) < best_score - 0.2 
+                    for i in range(self._current_index + 1, best_match)
+                )
+                if skipped_similar:
+                    self._current_index = best_match
+                    self._confirmed_index = best_match
+                    self._last_match_time = current_time
+                    self.sentenceMatched.emit(best_match)
+        else:
+            # 向上匹配（往回翻）
+            # 只有确定读错了才回翻
+            # 条件：当前句及后面几句的相似度都很低，且前面某句相似度很高
+            forward_scores = [
+                scores.get(i, 0) 
+                for i in range(self._current_index, min(self._current_index + 3, len(self._sentences)))
+            ]
+            
+            # 如果后面几句的相似度都很低（< 0.3），且前面某句相似度高，则回翻
+            if all(s < 0.3 for s in forward_scores) and best_score > 0.5:
+                self._current_index = best_match
+                self._confirmed_index = best_match
+                self._last_match_time = current_time
+                self.sentenceMatched.emit(best_match)

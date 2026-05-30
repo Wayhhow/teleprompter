@@ -31,9 +31,13 @@ CHAR_TIME_EN = 50  # 英文字符额外时间(ms)
 # ===== 语音识别配置 =====
 SAMPLE_RATE = 16000  # 音频采样率
 BLOCK_SIZE = 8000  # 音频块大小
-MATCH_THRESHOLD = 0.6  # 匹配阈值
-SEARCH_FORWARD = 5  # 向前搜索句子数
+MATCH_THRESHOLD = 0.4  # 匹配阈值（平衡灵敏度和稳定性）
+SEARCH_RANGE = 3  # 双向搜索范围：当前句前后各N句
 MODEL_DIR = "models"  # 模型目录
+
+# 实时匹配防抖配置
+MATCH_DEBOUNCE_MS = 1200  # 匹配后冷却时间（毫秒），避免频繁跳动
+MATCH_MIN_TEXT_LENGTH = 4  # 触发匹配的最小识别文本长度（字符）
 
 # ===== 深色主题样式表 =====
 DARK_STYLE = """

@@ -119,7 +119,8 @@ teleprompter/
 ├── config.py           # 全局配置
 ├── requirements.txt    # Python 依赖
 ├── build.bat           # PyInstaller 构建脚本
-└── Teleprompter.spec   # PyInstaller 配置
+├── Teleprompter.spec   # PyInstaller 配置
+└── test_speech.txt     # 示例测试稿件
 ```
 
 ## 配置
